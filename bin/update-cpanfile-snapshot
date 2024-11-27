@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+_mktemp() {
+  cd /tmp && mktemp -d cpm-dists-XXXXXX
+}
+
+_mk_provides() {
+  meta="${1}"
+  dist="${2}"
+
+  echo "provides:"
+
+  if [[ "$(yq -r '. | has("provides")' "${meta}")" == "true" ]]; then
+    # shellcheck disable=SC2016
+    yq -r '(.provides | keys)[] as $k | "\($k) \(.provides[$k].version)"' "${meta}" | sed 's/null$/undef/'
+  else
+    ver=$(yq -r '(.version)' "${meta}")
+    find "${dist}/lib" -type f -print0 \
+      | xargs -0 grep -P '(package|class) ([a-zA-Z0-9_]+(::[a-zA-Z0-9_]+)*);' \
+      | cut -d' ' -f2 \
+      | grep -vP '^$' \
+      | sed "s/;/ ${ver}/" \
+      | sort -u
+  fi | sed 's/^/  /'
+}
+
+_mk_requrements() {
+  meta="${1}"
+  dist="${2}"
+
+  echo "requirements:"
+  yq -r '(.prereqs.runtime.[] + .prereqs.configure.[]) | to_entries[] | "\(.key) \(.value)"' "${meta}" \
+    | sed 's/^/  /'
+}
+
+_mk_snapshot() {
+  # shellcheck disable=SC2155
+  local files="$(\find cache -type f | sort -u)";
+
+  exec 2>/dev/null
+
+  echo "# carton snapshot format: version 1.0"
+  echo "DISTRIBUTIONS"
+
+  mkdir -p unpack && cd unpack && \
+  for file in $files; do
+    case "${file}" in
+      *.tar.gz|*.tgz)
+        tar -zxf "../${file}" 
+        ;;
+    esac
+
+    for dist in $(find . -type d | cut -d/ -f2 | sort -u | grep -vP "^\.$"); do
+      echo "  ${dist}"
+      echo "    pathname: ${file#*/*/*/}"
+
+      local emit=0
+      for meta in $(find "$(pwd)" -type f -name 'META.*' | sort -u | head -n1); do
+        if [[ $emit -le 0 ]]; then
+          _mk_provides    "${meta}" "${dist}" | sed 's/^/    /'
+          _mk_requrements "${meta}" "${dist}" | sed 's/^/    /'
+        fi
+
+        (( emit += 1 ))
+      done
+
+      rm "${dist}" -rf
+    done
+  done && cd ..
+}
+
+main() {
+  temp="/tmp/$(_mktemp)"
+
+  if [[ ! -d "${temp}" ]]; then
+    echo "failed to create temporary directory: ${temp}" >&2
+    exit 1
+  fi
+
+  cwd="$(pwd)"
+  cd "${temp}" \
+    && cpm install --prebuilt --home="$(pwd)" "${@:-}" \
+    && _mk_snapshot \
+    && cd "${cwd}"
+
+  rm "${temp}" -rf
+  true
+}
+
+main "${@:-}"
