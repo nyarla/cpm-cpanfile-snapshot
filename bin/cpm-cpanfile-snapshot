@@ -89,4 +89,14 @@ main() {
   true
 }
 
-main "${@:-}"
+testing() {
+  # stub for testing
+  echo 1..1
+  echo ok
+}
+
+if [[ -z "${HARNESS_ACTIVE:-}" ]]; then
+  main "${@:-}"
+else
+  testing
+fi
